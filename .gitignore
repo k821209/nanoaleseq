@@ -1,0 +1,36 @@
+# Pipeline outputs
+out_dir/
+out/
+output/
+*.bam
+*.bam.bai
+*.fastq
+*.fastq.gz
+*.fa
+*.fa.gz
+*.fai
+*.gff
+*.gff3
+
+# Plot outputs
+*.png
+*.pdf
+*.svg
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*~
+*.swp
+
+# Logs
+*.log
+logs/
