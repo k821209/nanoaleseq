@@ -25,6 +25,7 @@
 #   --pcr-r SEQ        3' technical primer; auto-RC computed   (ACGCTCGACTAACTTGTACC)
 #   --min-len N        cutadapt --minimum-length               (50)
 #   --fl-threshold N   bp threshold for "full-length" LTR retro (4500)
+#   --te-feature TYPE  GFF column-3 type counted as a TE feature (transposable_element)
 #   --ltr-regex RX     family-name regex for LTR retro         (^(ATCOPIA|ATGP|ATHILA|ATLANTYS))
 #   --nuclear-regex RX BAM-header SN regex for nuclear contigs (TAIR10 NCBI Chr1-5)
 #   --threads N                                                (8)
@@ -40,6 +41,7 @@ PCR_R='ACGCTCGACTAACTTGTACC'
 PCR_R_RC='GGTACAAGTTAGTCGAGCGT'           # reverse-complement of PCR_R, hits the 3' end of reads
 MIN_LEN=50                                 # cutadapt --minimum-length
 FL_THRESHOLD=4500                          # bp; used to flag full-length LTR retros
+TE_FEATURE='transposable_element'          # GFF column-3 type counted as a "TE feature" at stage 5
 LTR_FAM_REGEX='^(ATCOPIA|ATGP|ATHILA|ATLANTYS)'
 NUCLEAR_REGEX='^NC_00(3070\.9|3071\.7|3074\.8|3075\.7|3076\.8)$'   # TAIR10 NCBI Chr1-5
 
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --pcr-r)         PCR_R="$2"; PCR_R_RC=$(python3 -c "import sys; s='$2'; tr=str.maketrans('ACGTN','TGCAN'); print(s.translate(tr)[::-1])"); shift 2 ;;
         --min-len)       MIN_LEN="$2"; shift 2 ;;
         --fl-threshold)  FL_THRESHOLD="$2"; shift 2 ;;
+        --te-feature)    TE_FEATURE="$2"; shift 2 ;;
         --ltr-regex)     LTR_FAM_REGEX="$2"; shift 2 ;;
         --nuclear-regex) NUCLEAR_REGEX="$2"; shift 2 ;;
         -h|--help) sed -n '1,/^# Dependencies/p' "$0"; exit 0 ;;
@@ -118,8 +121,16 @@ samtools view -F 0x904 -b "$OUT/aligned/all.bam" $NUCLEAR_REFS \
 samtools index "$OUT/target/nuclear.bam"
 
 # ----------------------------------------------------------------------
-log "Step 4/6  Filter to TE-overlapping reads (any TE feature)"
-bedtools intersect -a "$OUT/target/nuclear.bam" -b "$TE_GFF" -u \
+log "Step 4/6  Filter to TE-overlapping reads (column-3 type == '$TE_FEATURE')"
+# Intersect against ONLY the TE features of the GFF, not every record. A combined
+# genes+transposons GFF (e.g. TAIR10_GFF3_genes_transposons.gff) also contains
+# genome-spanning 'chromosome', 'gene' and 'exon' records; intersecting against
+# those would make essentially every nuclear read "overlap a feature" and inflate
+# this stage to ~100%. Restricting to the TE feature type keeps stage 5 meaning
+# "overlaps an annotated TE", matching the manuscript funnel.
+awk -F'\t' -v ft="$TE_FEATURE" '$3==ft' "$TE_GFF" > "$OUT/target/te_features.gff"
+log "  TE features ($TE_FEATURE): $(wc -l < "$OUT/target/te_features.gff")"
+bedtools intersect -a "$OUT/target/nuclear.bam" -b "$OUT/target/te_features.gff" -u \
     > "$OUT/target/te_overlap.bam" 2> /dev/null
 samtools index "$OUT/target/te_overlap.bam"
 

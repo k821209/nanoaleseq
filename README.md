@@ -81,10 +81,19 @@ python plots/render_onsen_pileup.py \
 | `--pcr-f` | 5' technical primer | `ACACGACGCTCTTCCGATCT` |
 | `--pcr-r` | 3' technical primer (reverse-complemented automatically) | `ACGCTCGACTAACTTGTACC` |
 | `--fl-threshold` | LTR retro length (bp) considered "full-length" | 4500 |
+| `--te-feature` | GFF column-3 type counted as a "TE feature" at the any-TE funnel stage | `transposable_element` |
 | `--ltr-regex` | Regex matching LTR-retro family aliases in the GFF | `^(ATCOPIA\|ATGP\|ATHILA\|ATLANTYS)` |
 | `--nuclear-regex` | Regex matching nuclear-chromosome contig names | `^NC_00(3070\.9\|3071\.7\|3074\.8\|3075\.7\|3076\.8)$` |
 
 The defaults target the *Arabidopsis* ALE-seq design from Cho et al. 2019. Override `--pcr-f` / `--pcr-r` for a different primer design, `--ltr-regex` and `--nuclear-regex` for a different organism / annotation.
+
+> **Note on the TE GFF.** The `--te-gff` may be a TE-only annotation **or** a combined
+> genes+transposons GFF (e.g. `TAIR10_GFF3_genes_transposons.gff`, as in the quick-start
+> above). The any-TE funnel stage intersects reads only against records whose column-3
+> type equals `--te-feature` (default `transposable_element`), so genome-spanning
+> `chromosome` / `gene` / `exon` records in a combined GFF do **not** inflate that stage.
+> If your annotation uses a different TE feature type (e.g. `LTR_retrotransposon`),
+> pass it via `--te-feature`.
 
 ## Outputs
 
