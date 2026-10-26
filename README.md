@@ -161,3 +161,64 @@ MIT — see [LICENSE](LICENSE).
 - **Jungnam Cho** (co-corresponding) — jungnam.cho@durham.ac.uk
 
 Issues and pull requests welcome via GitHub.
+
+## Adapter self-ligation concatemers (stage 2)
+
+**Most of a nanoALE-seq library is not sequence.** The ligation adapter
+(PCR-F + spacer + T7 promoter, 46 bp) self-ligates into head-to-tail tandem
+arrays which the PCR step then amplifies. Measured 2026-10-26 as a share of the
+reads that *survive* the stage-1 linked-adapter trim:
+
+| library | PCR cycles | share that is adapter array |
+|---|---|---|
+| *Cuscuta japonica* Muju SD | 22 | 88.7% |
+| *Cuscuta japonica* Muju ST | 26 | **98.3%** |
+| *Arabidopsis* Col-0 heat (benchmark) | - | 94.2% |
+| *Arabidopsis* ddm1 (benchmark) | - | 97.1% |
+
+They pass stage 1 because the array begins with a genuine PCR-F and ends with
+PCR-R-RC, which is exactly what the linked adapter asks for. They survive the
+0.5x bead clean-up because a ten-unit array is ~460 bp, not 46. More PCR cycles
+make it worse, since the short template out-competes real inserts: that is why
+the 26-cycle arm of a matched pair is the dirtier one.
+
+The signature is an exact 46 bp period between consecutive PCR-F hits (225,241
+of ~240,000 observed gaps). The unit is:
+
+```
+ACACGACGCTCTTCCGATCT AGAG AGTAATACGACTCACTATAGGG
+|------ PCR-F ------|      |---- T7 promoter ----|
+```
+
+Stage 2 logs the modal period it finds, so a changed adapter design shows up in
+the log rather than passing silently.
+
+### Why the stage SPLITS rather than discards
+
+42.6% of array-carrying reads still hold a genuine genomic fragment embedded in
+the array, and those fragments were most of the old pipeline's final target. So
+stage 2 cuts the read at every adapter occurrence and keeps the longest
+remaining segment if it reaches `--min-insert`; reads with no internal adapter
+pass through untouched.
+
+On one 200,000-read Col-0 subsample:
+
+| strategy | reads to alignment | final full-length-LTR target |
+|---|---|---|
+| no filter (old behaviour) | 29,859 | 1,287 |
+| discard the whole read | 1,768 | 173 |
+| **split, `--min-insert 50`** | 21,638 | 1,201 |
+| **split, `--min-insert 100` (default)** | 10,372 | 885 |
+| **split, `--min-insert 150`** | 6,081 | 556 |
+
+Lower `--min-insert` keeps more target reads; higher gives fragments long enough
+to place in a repeat-rich genome. 100 bp is the default because a shorter
+fragment cannot be assigned to a locus in an LTR-dominated genome, but the right
+value is genome-dependent: raise it for a large repetitive genome, lower it for
+*Arabidopsis*. `--no-concatemer-filter` restores the old behaviour, and the
+funnel then says so in its stage-3 label.
+
+**This is a bench problem before it is an analysis problem.** The filter recovers
+what it can, but 89-98% of the sequencing capacity was spent on empty adapter.
+Fixing the ligation (blocking self-ligation, or removing free adapter before PCR)
+is worth far more than anything this stage can do.
