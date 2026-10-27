@@ -28,6 +28,7 @@
 #   --te-feature TYPE  GFF column-3 type counted as a TE feature (transposable_element)
 #   --no-concatemer-filter      keep adapter arrays intact (default: split them out)
 #   --min-insert N              shortest insert kept after splitting an array (100)
+#   --min-qual N                mean-base-quality floor on kept reads (10; 0 disables)
 #   --concatemer-mismatch N     mismatches allowed when finding an internal adapter (0)
 #   --concatemer-probe SEQ      extra internal-adapter probe; repeatable
 #                               (default probes: PCR-F and PCR-R-RC)
@@ -53,6 +54,7 @@ NUCLEAR_REGEX='^NC_00(3070\.9|3071\.7|3074\.8|3075\.7|3076\.8)$'   # TAIR10 NCBI
 CONCATEMER_FILTER=1                        # drop adapter self-ligation concatemers
 CONCATEMER_MM=0                            # mismatches allowed when locating internal adapter
 MIN_INSERT=100                             # shortest insert worth keeping after splitting an array
+MIN_QUAL=10                                # mean-base-quality floor; adapter remnants sit near Q5
 CONCATEMER_PROBES=()                       # extra probes; PCR_F / PCR_R_RC are always included
 
 THREADS=8
@@ -78,6 +80,7 @@ while [[ $# -gt 0 ]]; do
         --no-concatemer-filter)  CONCATEMER_FILTER=0; shift 1 ;;
         --concatemer-mismatch)   CONCATEMER_MM="$2"; shift 2 ;;
         --min-insert)            MIN_INSERT="$2"; shift 2 ;;
+        --min-qual)              MIN_QUAL="$2"; shift 2 ;;
         --concatemer-probe)      CONCATEMER_PROBES+=("$2"); shift 2 ;;
         -h|--help) sed -n '1,/^# Dependencies/p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -136,6 +139,14 @@ log "Step 2/7  Split ADAPTER-CONCATEMER arrays, keep the embedded insert"
 # the unit being ACACGACGCTCTTCCGATCT AGAG AGTAATACGACTCACTATAGGG. A genuine
 # amplicon carries PCR-F ONLY at the 5' end, which stage 1 has already removed,
 # so any remaining internal occurrence means a second adapter copy in the molecule.
+#
+# The splitter also cuts at the T7 promoter and applies a mean-quality floor.
+# Both were added after the first version let adapter remnants through: an array
+# whose PCR-F copies had drifted survived as a >=100 bp "insert" made entirely of
+# adapter, sitting near Q5 against the library's Q25, and such reads aligned 59 bp
+# at a time to whatever matched. In a parasite experiment they produced an
+# apparent 6-fold enrichment of host-derived sequence in the attached arm that
+# was nothing but this artefact.
 if [[ "$CONCATEMER_FILTER" -eq 1 ]]; then
     PROBE_ARGS=(--probe "$PCR_F" --probe "$PCR_R_RC")
     for pr in ${CONCATEMER_PROBES+"${CONCATEMER_PROBES[@]}"}; do PROBE_ARGS+=(--probe "$pr"); done
@@ -155,6 +166,7 @@ if [[ "$CONCATEMER_FILTER" -eq 1 ]]; then
         --in "$OUT/clean/trimmed.fastq.gz" \
         --out "$OUT/clean/noconcat.fastq.gz" \
         --min-insert "$MIN_INSERT" \
+        --min-qual "$MIN_QUAL" \
         --stats "$OUT/clean/concatemer_stats.tsv" \
         "${PROBE_ARGS[@]}" 2>&1 | sed 's/^/  /'
     READS_FOR_ALIGNMENT="$OUT/clean/noconcat.fastq.gz"
@@ -237,7 +249,7 @@ RAW=$(seqkit stats -T "$FASTQ" | tail -1 | awk '{print $4}')
 TRIMMED=$(seqkit stats -T "$OUT/clean/trimmed.fastq.gz" | tail -1 | awk '{print $4}')
 NOCONCAT=$(seqkit stats -T "$READS_FOR_ALIGNMENT" | tail -1 | awk '{print $4}')
 if [[ "$CONCATEMER_FILTER" -eq 1 ]]; then
-    CONCAT_DESC="After splitting adapter-concatemer arrays (longest insert >= ${MIN_INSERT} bp kept)"
+    CONCAT_DESC="After splitting adapter-concatemer arrays (insert >= ${MIN_INSERT} bp, mean Q >= ${MIN_QUAL})"
 else
     CONCAT_DESC="Adapter-concatemer filter DISABLED (--no-concatemer-filter) - count unchanged"
 fi
