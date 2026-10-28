@@ -29,6 +29,10 @@
 #   --no-concatemer-filter      keep adapter arrays intact (default: split them out)
 #   --min-insert N              shortest insert kept after splitting an array (100)
 #   --min-qual N                mean-base-quality floor on kept reads (10; 0 disables)
+#   --pbs SEQ                   primer-binding site to look for (TGGTATCAGAGC)
+#   --pbs-mismatch N            mismatches allowed matching it (2)
+#   --pbs-end 3|5|both          which insert end must carry it (3)
+#   --require-pbs               keep only PBS-bearing inserts (default: count them)
 #   --concatemer-mismatch N     mismatches allowed when finding an internal adapter (0)
 #   --concatemer-probe SEQ      extra internal-adapter probe; repeatable
 #                               (default probes: PCR-F and PCR-R-RC)
@@ -55,6 +59,10 @@ CONCATEMER_FILTER=1                        # drop adapter self-ligation concatem
 CONCATEMER_MM=0                            # mismatches allowed when locating internal adapter
 MIN_INSERT=100                             # shortest insert worth keeping after splitting an array
 MIN_QUAL=10                                # mean-base-quality floor; adapter remnants sit near Q5
+PBS='TGGTATCAGAGC'                         # plant LTR-retrotransposon PBS (initiator tRNA-Met)
+PBS_MM=2                                   # mismatches allowed when matching it
+PBS_END=3                                  # which insert end must carry it
+REQUIRE_PBS=0                              # 1 = keep only PBS-bearing inserts
 CONCATEMER_PROBES=()                       # extra probes; PCR_F / PCR_R_RC are always included
 
 THREADS=8
@@ -81,6 +89,10 @@ while [[ $# -gt 0 ]]; do
         --concatemer-mismatch)   CONCATEMER_MM="$2"; shift 2 ;;
         --min-insert)            MIN_INSERT="$2"; shift 2 ;;
         --min-qual)              MIN_QUAL="$2"; shift 2 ;;
+        --pbs)                   PBS="$2"; shift 2 ;;
+        --pbs-mismatch)          PBS_MM="$2"; shift 2 ;;
+        --pbs-end)               PBS_END="$2"; shift 2 ;;
+        --require-pbs)           REQUIRE_PBS=1; shift 1 ;;
         --concatemer-probe)      CONCATEMER_PROBES+=("$2"); shift 2 ;;
         -h|--help) sed -n '1,/^# Dependencies/p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -103,7 +115,7 @@ log "=== nanoALE-seq pipeline start ==="
 log "fastq=$FASTQ  ref=$REF  te_gff=$TE_GFF  out=$OUT  threads=$THREADS"
 
 # ----------------------------------------------------------------------
-log "Step 1/7  cutadapt — STRICT linked-adapter trim (require both PCR-F at 5' AND PCR-R-RC at 3')"
+log "Step 1/8  cutadapt — STRICT linked-adapter trim (require both PCR-F at 5' AND PCR-R-RC at 3')"
 # Linked-adapter syntax: -g 'ADAPTER1...ADAPTER2' enforces that BOTH adapters be
 # found in the same read; reads with only one adapter (e.g. residual ds-DNA
 # carrying PCR-F at both ends due to incomplete TURBO DNase digestion) are
@@ -117,7 +129,7 @@ cutadapt -j "$THREADS" \
 log "  trimmed reads: $(seqkit stats -T "$OUT/clean/trimmed.fastq.gz" | tail -1 | awk '{print $4}')"
 
 # ----------------------------------------------------------------------
-log "Step 2/7  Split ADAPTER-CONCATEMER arrays, keep the embedded insert"
+log "Step 2/8  Split ADAPTER-CONCATEMER arrays, keep the embedded insert"
 # A large fraction of every library measured so far is not sequence at all: the
 # ligation adapter (PCR-F + spacer + T7 promoter) self-ligates into head-to-tail
 # tandem arrays which are then amplified by the PCR step. Measured 2026-10-26 on
@@ -180,13 +192,43 @@ fi
 log "  reads carried to alignment: $(seqkit stats -T "$READS_FOR_ALIGNMENT" | tail -1 | awk '{print $4}')"
 
 # ----------------------------------------------------------------------
-log "Step 3/7  minimap2 — map-ont alignment to reference"
+log "Step 3/8  Primer-binding site check"
+# nanoALE-seq reverse-transcribes from a primer annealed at the PBS, so a genuine
+# product ends at the PBS. This is the one stage that tests the method's own
+# mechanism rather than where a read happens to map. Measured 2026-10-28 as the
+# share of inserts whose 3' terminal 12 bp is TGGTATCAGAGC within 2 mismatches:
+#
+#     Cuscuta japonica Muju SD   89.3%        Arabidopsis Col-0 heat   84.3%
+#     Cuscuta japonica Muju ST   77.3%        Arabidopsis ddm1         82.8%
+#
+# TGGTATCAGAGC is the plant LTR-retrotransposon PBS, complementary to the 3' end
+# of initiator tRNA-Met; in these libraries it runs 90-93% conserved per base
+# while the twelve bases before it run 31-63%, so the boundary is the motif's own
+# and was read off the data rather than assumed.
+#
+# Reported, not enforced, by default. A rate far below these figures means the RT
+# did not prime where the protocol says it primes, and the run should be read as a
+# failed library rather than a biological result. --require-pbs turns it into a
+# filter when you want only molecules whose origin is established.
+PBS_ARGS=(--pbs "$PBS" --pbs-mismatch "$PBS_MM" --pbs-end "$PBS_END")
+[[ "$REQUIRE_PBS" -eq 1 ]] && PBS_ARGS+=(--require-pbs)
+"$(dirname "$0")/pbs_check.py" \
+    --in "$READS_FOR_ALIGNMENT" \
+    --out "$OUT/clean/pbs_checked.fastq.gz" \
+    --stats "$OUT/clean/pbs_stats.tsv" \
+    "${PBS_ARGS[@]}" 2>&1 | sed 's/^/  /'
+READS_FOR_ALIGNMENT="$OUT/clean/pbs_checked.fastq.gz"
+PBS_RATE=$(awk -F'\t' '$1=="pbs_rate"{print $2}' "$OUT/clean/pbs_stats.tsv")
+PBS_N=$(awk -F'\t' '$1=="inserts_with_pbs"{print $2}' "$OUT/clean/pbs_stats.tsv")
+
+# ----------------------------------------------------------------------
+log "Step 4/8  minimap2 — map-ont alignment to reference"
 minimap2 -ax map-ont -t "$THREADS" "$REF" "$READS_FOR_ALIGNMENT" 2> "$OUT/logs/minimap2.log" \
     | samtools sort -@ "$THREADS" -o "$OUT/aligned/all.bam" -
 samtools index "$OUT/aligned/all.bam"
 
 # ----------------------------------------------------------------------
-log "Step 4/7  Filter to nuclear chromosomes (regex: $NUCLEAR_REGEX)"
+log "Step 5/8  Filter to nuclear chromosomes (regex: $NUCLEAR_REGEX)"
 NUCLEAR_REFS=$(samtools view -H "$OUT/aligned/all.bam" \
     | awk -v rx="$NUCLEAR_REGEX" '$1=="@SQ"{for(i=2;i<=NF;i++) if(match($i,/^SN:/)) {sn=substr($i,4); if(sn ~ rx) print sn}}')
 if [[ -z "$NUCLEAR_REFS" ]]; then
@@ -201,7 +243,7 @@ samtools view -F 0x904 -b "$OUT/aligned/all.bam" $NUCLEAR_REFS \
 samtools index "$OUT/target/nuclear.bam"
 
 # ----------------------------------------------------------------------
-log "Step 5/7  Filter to TE-overlapping reads (column-3 type == '$TE_FEATURE')"
+log "Step 6/8  Filter to TE-overlapping reads (column-3 type == '$TE_FEATURE')"
 # Intersect against ONLY the TE features of the GFF, not every record. A combined
 # genes+transposons GFF (e.g. TAIR10_GFF3_genes_transposons.gff) also contains
 # genome-spanning 'chromosome', 'gene' and 'exon' records; intersecting against
@@ -215,7 +257,7 @@ bedtools intersect -a "$OUT/target/nuclear.bam" -b "$OUT/target/te_features.gff"
 samtools index "$OUT/target/te_overlap.bam"
 
 # ----------------------------------------------------------------------
-log "Step 6/7  Filter to LTR retrotransposon family overlap (regex: $LTR_FAM_REGEX)"
+log "Step 7/8  Filter to LTR retrotransposon family overlap (regex: $LTR_FAM_REGEX)"
 awk -F'\t' -v rx="$LTR_FAM_REGEX" '
   match($9, /Alias=[^;]+/) {
     a = substr($9, RSTART+6, RLENGTH-6);
@@ -241,13 +283,19 @@ samtools fastq "$OUT/target/fl_ltr_retro.bam" 2> /dev/null \
     | gzip > "$OUT/target/final_target.fastq.gz"
 
 # ----------------------------------------------------------------------
-log "Step 7/7  Funnel report"
+log "Step 8/8  Funnel report"
 count_unique_reads_in_bam () {  # primary records only
     samtools view -c -F 0x904 "$1"
 }
 RAW=$(seqkit stats -T "$FASTQ" | tail -1 | awk '{print $4}')
 TRIMMED=$(seqkit stats -T "$OUT/clean/trimmed.fastq.gz" | tail -1 | awk '{print $4}')
-NOCONCAT=$(seqkit stats -T "$READS_FOR_ALIGNMENT" | tail -1 | awk '{print $4}')
+NOCONCAT=$(seqkit stats -T "$OUT/clean/noconcat.fastq.gz" | tail -1 | awk '{print $4}')
+PBSOUT=$(seqkit stats -T "$READS_FOR_ALIGNMENT" | tail -1 | awk '{print $4}')
+if [[ "$REQUIRE_PBS" -eq 1 ]]; then
+    PBS_DESC="After requiring the PBS ${PBS} at the ${PBS_END}' end (<=${PBS_MM} mm)"
+else
+    PBS_DESC="PBS ${PBS} present in ${PBS_N} inserts (rate ${PBS_RATE}); not enforced"
+fi
 if [[ "$CONCATEMER_FILTER" -eq 1 ]]; then
     CONCAT_DESC="After splitting adapter-concatemer arrays (insert >= ${MIN_INSERT} bp, mean Q >= ${MIN_QUAL})"
 else
@@ -264,11 +312,12 @@ stages = [
   ('1', 'Raw Nanopore reads',                                                                                  $RAW),
   ('2', 'After cutadapt PCR-F/R linked-adapter trim (>= ${MIN_LEN} bp, --discard-untrimmed)',                  $TRIMMED),
   ('3', '${CONCAT_DESC}',                                                                                       $NOCONCAT),
-  ('4', 'Primary aligned to reference (any contig, -F 0x904)',                                                  $S3),
-  ('5', 'Primary aligned to nuclear chromosomes only (regex match: ${NUCLEAR_REGEX})',                          $S4),
-  ('6', 'Overlapping any TE feature in --te-gff',                                                               $S5),
-  ('7', 'Overlapping an LTR retrotransposon family (regex: ${LTR_FAM_REGEX})',                                  $S6),
-  ('8', 'Overlapping a full-length LTR retrotransposon (annotated length >= ${FL_THRESHOLD} bp) — FINAL TARGET',$S7),
+  ('4', '${PBS_DESC}',                                                                                          $PBSOUT),
+  ('5', 'Primary aligned to reference (any contig, -F 0x904)',                                                  $S3),
+  ('6', 'Primary aligned to nuclear chromosomes only (regex match: ${NUCLEAR_REGEX})',                          $S4),
+  ('7', 'Overlapping any TE feature in --te-gff',                                                               $S5),
+  ('8', 'Overlapping an LTR retrotransposon family (regex: ${LTR_FAM_REGEX})',                                  $S6),
+  ('9', 'Overlapping a full-length LTR retrotransposon (annotated length >= ${FL_THRESHOLD} bp) — FINAL TARGET',$S7),
 ]
 print('stage\tdescription\tread_count\tpct_of_raw\tpct_of_previous')
 prev = stages[0][2]; raw = stages[0][2]
@@ -285,5 +334,6 @@ log "=== DONE ==="
 log "Final target reads (FL LTR retro):  $OUT/target/final_target.fastq.gz"
 log "Concatemer-free reads:              $OUT/clean/noconcat.fastq.gz"
 log "Concatemer split stats:             $OUT/clean/concatemer_stats.tsv"
+log "PBS check stats:                    $OUT/clean/pbs_stats.tsv"
 log "All stage BAMs:                     $OUT/target/*.bam"
 log "Funnel report:                       $OUT/target/funnel_report.tsv"

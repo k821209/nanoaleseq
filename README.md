@@ -222,3 +222,39 @@ funnel then says so in its stage-3 label.
 what it can, but 89-98% of the sequencing capacity was spent on empty adapter.
 Fixing the ligation (blocking self-ligation, or removing free adapter before PCR)
 is worth far more than anything this stage can do.
+
+## Primer-binding site check (stage 3)
+
+The README has always said the method amplifies the LTR–PBS region, but nothing
+in the pipeline checked it. Stage 3 does.
+
+nanoALE-seq reverse-transcribes from a primer annealed at the PBS, so a genuine
+product ends at the PBS. Share of inserts whose 3' terminal 12 bp is
+TGGTATCAGAGC within two mismatches, measured 2026-10-28 after the stage-2 split:
+
+| library | inserts | with PBS | rate |
+|---|---:|---:|---:|
+| *Cuscuta japonica* Muju SD | 1,994,397 | 1,776,689 | **89.3%** |
+| *Cuscuta japonica* Muju ST | 328,120 | 253,492 | **77.3%** |
+| *Arabidopsis* Col-0 heat | 208,339 | 175,537 | **84.3%** |
+| *Arabidopsis* ddm1 | 120,102 | 99,468 | **82.8%** |
+
+TGGTATCAGAGC is the plant LTR-retrotransposon PBS, complementary to the 3' end of
+initiator tRNA-Met. The motif was read off the data, not assumed: across the last
+24 bases of the insert, the final twelve run 90–93% conserved per base and the
+twelve before them run 31–63%, so the boundary is the motif's own.
+
+**What the stage establishes, and what it does not.** The PBS at a defined end
+shows the reverse transcription primed where the protocol says it primes, so the
+templates carried a PBS. It does not by itself show the template was
+extrachromosomal rather than a genomic fragment. The complementary evidence is
+positional: in the *Cuscuta* pilot, alignments fell on the LTR repeat rather than
+the element interior 2.6 times more often than the genome's own LTR-to-internal
+ratio would give. Read the two together.
+
+The stage reports by default and does not filter, because a low rate is a finding
+about the library rather than a set of reads to discard: it means the RT did not
+prime where it should have, and the run is a failed library rather than a
+biological result. `--require-pbs` turns it into a filter when you want only
+molecules whose origin is established. `--pbs`, `--pbs-mismatch` and `--pbs-end`
+cover a different element class or protocol design.
